@@ -18,7 +18,14 @@ import {
   LineChart, Line
 } from "recharts";
 
-// ---- Firebase client config (from your message) ----
+/**
+ * Carts & Mass Experiment — React Single File
+ * - Student tab: guided data entry + live chart/table
+ * - Teacher tab: seed classes, aggregate charts, submissions table, CSV export (via browser)
+ * - Firestore-powered Class dropdown on Student tab (reads from `classes` collection)
+ */
+
+// ---- Firebase client config (yours) ----
 const firebaseConfig = {
   apiKey: "AIzaSyAJaWsPWzrP3xx9M5RtagoMlxmtFZYnw_g",
   authDomain: "carts-and-mass-experiment.firebaseapp.com",
@@ -34,8 +41,8 @@ const db = getFirestore(app);
 const auth = getAuth();
 signInAnonymously(auth).catch(console.error);
 
-// basic teacher gate
-const TEACHER_KEY = import.meta.env.VITE_TEACHER_KEY || "CLASS-TEACHER-KEY";
+// Teacher gate (optional). Use Vercel env var VITE_TEACHER_KEY for production.
+const TEACHER_KEY = import.meta.env?.VITE_TEACHER_KEY || "CLASS-TEACHER-KEY";
 
 const DEFAULT_CONDITIONS = [
   { key: "control", label: "Control (no added mass)" },
@@ -61,7 +68,9 @@ function stdev(arr) {
   return Math.sqrt(v);
 }
 
+// -------------------- Student Form --------------------
 function StudentForm() {
+  const [classes, setClasses] = useState([]); // Firestore-powered dropdown
   const [classCode, setClassCode] = useState("");
   const [groupName, setGroupName] = useState("");
   const [members, setMembers] = useState("");
@@ -71,6 +80,16 @@ function StudentForm() {
   const [submitted, setSubmitted] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  // Subscribe to classes collection for dropdown
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "classes"), (snap) => {
+      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      list.sort((a,b) => (a.code||"").localeCompare(b.code||""));
+      setClasses(list);
+    });
+    return () => unsub();
+  }, []);
 
   const parsed = useMemo(() => conditions.map(c => {
     const mass = toNumber(c.mass);
@@ -161,8 +180,16 @@ function StudentForm() {
       <h2 style={{marginTop:0}}>Student Data Entry</h2>
       <div className="grid grid-3">
         <div>
-          <label>Class Code</label>
-          <input value={classCode} onChange={e=>setClassCode(e.target.value)} placeholder="P2, P3, ..." />
+          <label>Class</label>
+          <select value={classCode} onChange={(e) => setClassCode(e.target.value)}>
+            <option value="">Select your class…</option>
+            {classes.map(c => (
+              <option key={c.code} value={c.code}>
+                {(c.name || c.code)} ({c.code})
+              </option>
+            ))}
+          </select>
+          <div className="muted">If your class isn’t listed, ask your teacher to add it on the Teacher tab.</div>
         </div>
         <div>
           <label>Group Name</label>
@@ -219,12 +246,14 @@ function StudentForm() {
 
       <div className="row" style={{justifyContent:"space-between", marginTop:8}}>
         <div className="muted">All values must be numbers. Use a period for decimals.</div>
-        <button disabled={!valid || busy} onClick={handleSubmit}>{busy? "Submitting…" : "Submit Data"}</button>
+        <button disabled={!valid || !classCode || busy} onClick={handleSubmit}>{busy? "Submitting…" : "Submit Data"}</button>
+          {!classCode && <div className="muted">Select your class to enable submit.</div>}
       </div>
     </div>
   );
 }
 
+// -------------------- Teacher Dashboard --------------------
 function TeacherDashboard() {
   const [key, setKey] = useState("");
   const [authed, setAuthed] = useState(false);
@@ -372,7 +401,7 @@ function TeacherDashboard() {
                 <YAxis label={{ value: "Avg Distance (m)", angle: -90, position: "insideLeft" }} />
                 <Tooltip />
                 <Legend />
-                {classesSet.map(code => (
+                {Array.from(new Set(submissions.map(s => s.classCode))).map(code => (
                   <Line key={code} type="monotone" dataKey={code} name={code} dot={false} />
                 ))}
               </LineChart>
@@ -406,7 +435,7 @@ function TeacherDashboard() {
                   <td className="right">{c.trials?.[1] ?? ""}</td>
                   <td className="right">{c.trials?.[2] ?? ""}</td>
                   <td className="right">{typeof c.avg === "number" ? c.avg.toFixed(3) : ""}</td>
-                  <td className="right">{typeof c.sd === "number" ? c.sd.toFixed(3) : ""}</td>
+                  <td className="right">{typeof c.sd === "number" ? c.sd.sd?.toFixed?.(3) : (typeof c.sd === "number" ? c.sd.toFixed(3) : "")}</td>
                 </tr>
               )))}
             </tbody>
@@ -417,10 +446,31 @@ function TeacherDashboard() {
   );
 }
 
+// -------------------- App Shell + basic styles (works with Vite index.html) --------------------
 export default function App() {
   const [tab, setTab] = useState("student");
   return (
     <div className="grid" style={{gap:16, marginTop:16}}>
+      <style>{`
+        .card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:16px; }
+        .grid { display:grid; gap:12px; }
+        .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        label { font-size:12px; color:#374151; display:block; margin-bottom:4px; }
+        input, select, button { font-size:14px; padding:10px 12px; border:1px solid #d1d5db; border-radius:10px; width:100%; box-sizing:border-box; }
+        button { cursor:pointer; background:#111827; color:#fff; border:none; }
+        button.secondary { background:#fff; color:#111827; border:1px solid #d1d5db; }
+        table { border-collapse: collapse; width: 100%; font-size: 14px; }
+        th, td { padding: 8px 10px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+        th { background: #f3f4f6; }
+        .tabs { display:flex; gap:8px; margin-bottom:12px; }
+        .tabs button { padding:8px 12px; border-radius:999px; border:1px solid #d1d5db; background:#fff; color:#111; }
+        .tabs button.active { background:#111827; color:#fff; }
+        .muted { color:#6b7280; font-size:12px; }
+        .row { display:flex; gap:8px; align-items:center; }
+        .right { text-align:right; }
+      `}</style>
+
       <div className="tabs">
         <button className={tab==="student" ? "active" : ""} onClick={()=>setTab("student")}>Student</button>
         <button className={tab==="teacher" ? "active" : ""} onClick={()=>setTab("teacher")}>Teacher</button>
