@@ -202,6 +202,15 @@ function StudentForm() {
           <input value={members} onChange={e=>setMembers(e.target.value)} placeholder="Alex, Bo, Chris" />
         </div>
       </div>
+      <div style={{ gridColumn: "1 / -1" }}>
+  				<label>
+    				Hypothesis: If the mass of the cart increases, then the distance the cart rolls will...
+  				</label>
+  				<select value={hypothesis} onChange={(e) => setHypothesis(e.target.value)}>
+   				 <option value="increase">increase</option>
+   				 <option value="decrease">decrease</option>
+  				</select>
+			</div>
 
       <div className="grid" style={{marginTop:12}}>
         {conditions.map((c, idx) => (
@@ -228,15 +237,7 @@ function StudentForm() {
                 </div>
               ))}
             </div>
-            <div style={{ gridColumn: "1 / -1" }}>
-  				<label>
-    				Hypothesis: If the mass of the cart increases, then the distance the cart rolls will...
-  				</label>
-  				<select value={hypothesis} onChange={(e) => setHypothesis(e.target.value)}>
-   				 <option value="increase">increase</option>
-   				 <option value="decrease">decrease</option>
-  				</select>
-			</div>
+            
             <div className="muted" style={{marginTop:6}}>
               Live Avg: {(() => {
                 const a = mean([toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)]);
