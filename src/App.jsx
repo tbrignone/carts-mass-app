@@ -74,6 +74,7 @@ function StudentForm() {
   const [classCode, setClassCode] = useState("");
   const [groupName, setGroupName] = useState("");
   const [members, setMembers] = useState("");
+  const [hypothesis, setHypothesis] = useState("increase");
   const [conditions, setConditions] = useState(
     DEFAULT_CONDITIONS.map(c => ({ key: c.key, label: c.label, mass: "", t1: "", t2: "", t3: "" }))
   );
@@ -111,6 +112,7 @@ function StudentForm() {
         classCode: classCode.trim().toUpperCase(),
         groupName: groupName.trim(),
         members: members.split(",").map(m => m.trim()).filter(Boolean),
+        + hypothesis,
         conditions: parsed.map(p => ({ label: p.label, mass: p.mass, trials: p.trials, avg: p.avg, sd: p.sd })),
         createdAt: serverTimestamp(),
       };
@@ -206,12 +208,9 @@ function StudentForm() {
           <div className="card" key={c.key}>
             <div className="grid grid-3">
               <div style={{gridColumn:"span 2"}}>
-                <label>Condition Label</label>
-                <input value={c.label} onChange={e=>{
-                  const v = e.target.value;
-                  setConditions(prev => prev.map((x,i)=> i===idx ? {...x, label:v} : x));
-                }}/>
-              </div>
+  				<label>Experiment Group</label>
+  				<input value={c.label} disabled />
+			  </div>
               <div>
                 <label>Cart Mass (g)</label>
                 <input value={c.mass} onChange={e=>{
@@ -229,6 +228,15 @@ function StudentForm() {
                 </div>
               ))}
             </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+  				<label>
+    				Hypothesis: If the mass of the cart increases, then the distance the cart rolls will...
+  				</label>
+  				<select value={hypothesis} onChange={(e) => setHypothesis(e.target.value)}>
+   				 <option value="increase">increase</option>
+   				 <option value="decrease">decrease</option>
+  				</select>
+			</div>
             <div className="muted" style={{marginTop:6}}>
               Live Avg: {(() => {
                 const a = mean([toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)]);
@@ -417,6 +425,7 @@ function TeacherDashboard() {
             <thead>
               <tr>
                 <th>When</th><th>Class</th><th>Group</th><th>Members</th>
+                <th>Hypothesis</th>
                 <th>Condition</th><th className="right">Mass (g)</th>
                 <th className="right">T1</th><th className="right">T2</th><th className="right">T3</th>
                 <th className="right">Avg</th><th className="right">SD</th>
@@ -429,6 +438,7 @@ function TeacherDashboard() {
                   <td>{s.classCode}</td>
                   <td>{s.groupName}</td>
                   <td>{(s.members||[]).join(", ")}</td>
+                  <td>{s.hypothesis || ""}</td>
                   <td>{c.label}</td>
                   <td className="right">{c.mass ?? ""}</td>
                   <td className="right">{c.trials?.[0] ?? ""}</td>
