@@ -112,7 +112,7 @@ function StudentForm() {
         classCode: classCode.trim().toUpperCase(),
         groupName: groupName.trim(),
         members: members.split(",").map(m => m.trim()).filter(Boolean),
-        + hypothesis,
+        hypothesis,
         conditions: parsed.map(p => ({ label: p.label, mass: p.mass, trials: p.trials, avg: p.avg, sd: p.sd })),
         createdAt: serverTimestamp(),
       };
