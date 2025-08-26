@@ -21,14 +21,13 @@ import {
 } from "recharts";
 
 /**
- * Carts & Mass Experiment — React Single File (Enhanced + cm→m fixer)
- * Adds:
- * - Hypothesis dropdown on Student form
- * - Experiment Group label (read-only)
- * - Teacher: richer stats (slope/R²), hypothesis tally & % correct, precision leaderboard,
- *   trial strip plot, Cohen's d vs control, CI table per condition
- * - Maintenance tools: Scan & Convert centimeter-like trial values (100–999) → meters
- *   with visual highlighting of suspected cm trials in the submissions table
+ * Carts & Mass Experiment — React Single File (Clean, Stable)
+ * Features:
+ * - Student: hypothesis dropdown (increase/decrease); experiment group labels read-only
+ * - Teacher: class seeding; trend slope & R²; hypothesis tally & % correct;
+ *   CI table; strip plot of trials; precision leaderboard; Cohen's d vs control
+ * - Maintenance: scan & convert centimeter-like trials (100–999) → meters; highlight cm trials
+ * - Guards against null/undefined to avoid runtime crashes
  */
 
 // ---- Firebase client config (yours) ----
@@ -57,24 +56,25 @@ const DEFAULT_CONDITIONS = [
   { key: "washers3_bars5", label: "3 washers + 5 bars" },
 ];
 
+// -------- utilities --------
 function toNumber(v) {
-  const n = parseFloat(String(v).replace(",", "."));
+  const n = parseFloat(String(v ?? "").replace(",", "."));
   return Number.isFinite(n) ? n : null;
 }
 function mean(arr) {
-  const valid = arr.filter((n) => Number.isFinite(n));
+  const valid = (arr || []).filter((n) => Number.isFinite(n));
   if (!valid.length) return null;
   return valid.reduce((a,b)=>a+b,0)/valid.length;
 }
 function sd(arr) {
-  const valid = arr.filter((n) => Number.isFinite(n));
+  const valid = (arr || []).filter((n) => Number.isFinite(n));
   if (valid.length < 2) return null;
   const m = mean(valid);
   const v = mean(valid.map(x => (x-m)**2));
   return Math.sqrt(v);
 }
 function se(arr){
-  const s = sd(arr); if (s==null) return null; return s / Math.sqrt(arr.filter(Number.isFinite).length);
+  const s = sd(arr); if (s==null) return null; return s / Math.sqrt((arr||[]).filter(Number.isFinite).length);
 }
 function ci95(arr){
   const m = mean(arr), s = se(arr);
@@ -82,24 +82,25 @@ function ci95(arr){
   const d = 1.96*s; return { lo: m - d, hi: m + d };
 }
 function linreg(points){
-  const n = points.length; if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
+  const n = (points||[]).length; if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
   const sx = points.reduce((a,p)=>a+p.x,0);
   const sy = points.reduce((a,p)=>a+p.y,0);
   const sxx = points.reduce((a,p)=>a+p.x*p.x,0);
   const sxy = points.reduce((a,p)=>a+p.x*p.y,0);
-  const slope = (n*sxy - sx*sy) / (n*sxx - sx*sx);
+  const slope = (n*sxy - sx*sy) / Math.max(1e-12,(n*sxx - sx*sx));
   const intercept = (sy - slope*sx)/n;
   const ybar = sy/n;
   const ssTot = points.reduce((a,p)=>a+(p.y-ybar)**2,0);
   const ssRes = points.reduce((a,p)=>a+(p.y-(slope*p.x+intercept))**2,0);
-  const r2 = ssTot===0 ? 0 : 1 - ssRes/ssTot;
+  const r2 = ssTot<=1e-12 ? 0 : Math.max(0, 1 - ssRes/ssTot);
   return { slope, intercept, r2 };
 }
 function cohensD(valsC, valsT){
-  const mC = mean(valsC), mT = mean(valsT);
-  const sC = sd(valsC), sT = sd(valsT);
-  const nC = valsC.filter(Number.isFinite).length;
-  const nT = valsT.filter(Number.isFinite).length;
+  const vC = (valsC||[]).filter(Number.isFinite);
+  const vT = (valsT||[]).filter(Number.isFinite);
+  const mC = mean(vC), mT = mean(vT);
+  const sC = sd(vC), sT = sd(vT);
+  const nC = vC.length, nT = vT.length;
   if ([mC,mT,sC,sT].some(v => v==null) || nC<2 || nT<2) return null;
   const sP = Math.sqrt(((nC-1)*sC**2 + (nT-1)*sT**2) / (nC+nT-2));
   if (!Number.isFinite(sP) || sP===0) return null;
@@ -201,8 +202,8 @@ function StudentForm() {
                       <td className="right">{p.trials[0] ?? "–"}</td>
                       <td className="right">{p.trials[1] ?? "–"}</td>
                       <td className="right">{p.trials[2] ?? "–"}</td>
-                      <td className="right">{p.avg?.toFixed(3) ?? "–"}</td>
-                      <td className="right">{p.sd?.toFixed(3) ?? "–"}</td>
+                      <td className="right">{p.avg?.toFixed?.(3) ?? "–"}</td>
+                      <td className="right">{p.sd?.toFixed?.(3) ?? "–"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -280,10 +281,10 @@ function StudentForm() {
             <div className="muted" style={{marginTop:6}}>
               Live Avg: {(() => {
                 const a = mean([toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)]);
-                return a ? a.toFixed(3) + " m" : "–";
+                return Number.isFinite(a) ? a.toFixed(3) + " m" : "–";
               })()} | SD: {(() => {
                 const s = sd([toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)]);
-                return s ? s.toFixed(3) + " m" : "–";
+                return Number.isFinite(s) ? s.toFixed(3) + " m" : "–";
               })()}
             </div>
           </div>
@@ -325,11 +326,11 @@ function TeacherDashboard() {
     return () => { unsubC(); unsubS(); };
   }, []);
 
-  const filtered = useMemo(() => submissions.filter(s => active==="ALL" ? true : s.classCode === active), [submissions, active]);
+  const filtered = useMemo(() => (submissions||[]).filter(s => active==="ALL" ? true : s.classCode === active), [submissions, active]);
 
   const conditionLabels = useMemo(() => {
     const set = new Set();
-    submissions.forEach(s => (s.conditions||[]).forEach(c => set.add(c.label)));
+    (submissions||[]).forEach(s => (s.conditions||[]).forEach(c => set.add(c.label)));
     return Array.from(set);
   }, [submissions]);
 
@@ -337,7 +338,7 @@ function TeacherDashboard() {
   const byCond = useMemo(() => {
     return conditionLabels.map(label => {
       const vals = filtered.flatMap(s => s.conditions||[])
-        .filter(c=>c.label===label && typeof c.avg === "number")
+        .filter(c=>c.label===label && Number.isFinite(c?.avg))
         .map(c=>c.avg);
       const m = vals.length ? mean(vals) : 0;
       const s = se(vals);
@@ -361,7 +362,7 @@ function TeacherDashboard() {
 
   // Hypothesis tally and correctness vs observed slope
   const hypCounts = useMemo(() => {
-    return filtered.reduce((a,s)=>{ const h = (s.hypothesis||"increase").toLowerCase(); a[h]=(a[h]||0)+1; return a; }, {});
+    return (filtered||[]).reduce((a,s)=>{ const h = (s.hypothesis||"increase").toLowerCase(); a[h]=(a[h]||0)+1; return a; }, {});
   }, [filtered]);
   const correctPct = useMemo(() => {
     const total = (hypCounts.increase||0)+(hypCounts.decrease||0);
@@ -373,7 +374,7 @@ function TeacherDashboard() {
 
   // Precision leaderboard (lower SD across all trials per submission)
   const precisionRows = useMemo(() => {
-    const rows = filtered.map(s => {
+    const rows = (filtered||[]).map(s => {
       const trials = (s.conditions||[]).flatMap(c => (c.trials||[])).filter(Number.isFinite);
       return { classCode: s.classCode, groupName: s.groupName, sd: sd(trials) };
     }).filter(r => r.sd!=null);
@@ -384,7 +385,7 @@ function TeacherDashboard() {
   // Strip plot data: every trial point per condition
   const stripData = useMemo(() => {
     return conditionLabels.flatMap(label =>
-      filtered.flatMap(s => s.conditions||[])
+      (filtered||[]).flatMap(s => s.conditions||[])
         .filter(c=>c.label===label)
         .flatMap(c => (c.trials||[]).filter(Number.isFinite).map(t => ({ condition: label, y: t })))
     );
@@ -392,12 +393,12 @@ function TeacherDashboard() {
 
   // Cohen's d vs control
   const cohensTable = useMemo(() => {
-    const ctrlVals = filtered.flatMap(s=>s.conditions||[]).filter(c=>/control/i.test(c.label)).map(c=>c.avg).filter(Number.isFinite);
+    const ctrlVals = (filtered||[]).flatMap(s=>s.conditions||[]).filter(c=>/control/i.test(c.label)).map(c=>c.avg).filter(Number.isFinite);
     if (!ctrlVals.length) return [];
     return conditionLabels
       .filter(l => !/control/i.test(l))
       .map(label => {
-        const vals = filtered.flatMap(s=>s.conditions||[]).filter(c=>c.label===label).map(c=>c.avg).filter(Number.isFinite);
+        const vals = (filtered||[]).flatMap(s=>s.conditions||[]).filter(c=>c.label===label).map(c=>c.avg).filter(Number.isFinite);
         const d = cohensD(ctrlVals, vals);
         return { label, d };
       });
@@ -453,6 +454,19 @@ function TeacherDashboard() {
     alert(`Conversion complete:\n• Docs updated: ${docsUpdated}\n• Trials converted: ${trialFixes}`);
   }
 
+  // ---- Seed classes (RESTORED) ----
+  async function seedDefaultClasses() {
+    const preset = [
+      { code:"P2", name:"Period 2" },
+      { code:"P3", name:"Period 3" },
+      { code:"P4", name:"Period 4" },
+      { code:"P6", name:"Period 6" },
+      { code:"P7", name:"Period 7" },
+      { code:"P8", name:"Period 8" },
+    ];
+    await Promise.all(preset.map(c => setDoc(doc(db, "classes", c.code), c)));
+  }
+
   if (!authed) {
     return (
       <div className="card">
@@ -504,10 +518,10 @@ function TeacherDashboard() {
           </div>
         </div>
         <div style={{marginTop:8, display:"flex", gap:8, flexWrap:"wrap"}}>
-          <button className={active==="ALL" ? "" : "secondary"} onClick={()=>setActive("ALL")}>ALL ({submissions.length})</button>
-          {classes.map(c => (
+          <button className={active==="ALL" ? "" : "secondary"} onClick={()=>setActive("ALL")}>ALL ({(submissions||[]).length})</button>
+          {(classes||[]).map(c => (
             <button key={c.code} className={active===c.code ? "" : "secondary"} onClick={()=>setActive(c.code)}>
-              {c.name || c.code} ({submissions.filter(s=>s.classCode===c.code).length})
+              {c.name || c.code} ({(submissions||[]).filter(s=>s.classCode===c.code).length})
             </button>
           ))}
         </div>
@@ -518,15 +532,15 @@ function TeacherDashboard() {
         <div className="row" style={{justifyContent:"space-between", flexWrap:"wrap"}}>
           <div>
             <strong>Trend</strong>
-            <div className="muted">Δdistance/Δmass = {slope.toFixed(3)} | R² = {r2.toFixed(2)}</div>
+            <div className="muted">Δdistance/Δmass = {Number.isFinite(slope)? slope.toFixed(3) : "–"} | R² = {Number.isFinite(r2)? r2.toFixed(2) : "–"}</div>
           </div>
           <div>
             <strong>Hypotheses</strong>
-            <div className="muted">increase: {hypCounts.increase||0} | decrease: {hypCounts.decrease||0} {correctPct!=null && `| % correct ≈ ${correctPct.toFixed(0)}%`}</div>
+            <div className="muted">increase: {hypCounts.increase||0} | decrease: {hypCounts.decrease||0} {Number.isFinite(correctPct) && `| % correct ≈ ${correctPct.toFixed(0)}%`}</div>
           </div>
           <div>
             <strong>Active dataset</strong>
-            <div className="muted">Groups: {filtered.length} | Conditions: {conditionLabels.length}</div>
+            <div className="muted">Groups: {(filtered||[]).length} | Conditions: {conditionLabels.length}</div>
           </div>
         </div>
       </div>
@@ -536,7 +550,7 @@ function TeacherDashboard() {
           <strong>Average Distance by Condition {active==="ALL" ? "(All Classes)" : `— ${active}`}</strong>
           <div style={{height:300}}>
             <ResponsiveContainer>
-              <BarChart data={byCond}>
+              <BarChart data={byCond || []}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="condition" angle={-12} textAnchor="end" height={60} />
                 <YAxis label={{ value: "Avg Distance (m)", angle: -90, position: "insideLeft" }} />
@@ -553,13 +567,13 @@ function TeacherDashboard() {
                 <tr><th>Condition</th><th className="right">n</th><th className="right">Mean</th><th className="right">SE</th><th className="right">95% CI</th></tr>
               </thead>
               <tbody>
-                {byCond.map(r => (
+                {(byCond||[]).map(r => (
                   <tr key={r.condition}>
                     <td>{r.condition}</td>
                     <td className="right">{r.n}</td>
-                    <td className="right">{Number.isFinite(r.average)? r.average.toFixed(3):""}</td>
-                    <td className="right">{Number.isFinite(r.se)? r.se.toFixed(3):""}</td>
-                    <td className="right">{(r.lo!=null&&r.hi!=null)? `[${r.lo.toFixed(3)}, ${r.hi.toFixed(3)}]` : ""}</td>
+                    <td className="right">{Number.isFinite(r?.average)? r.average.toFixed(3):""}</td>
+                    <td className="right">{Number.isFinite(r?.se)? r.se.toFixed(3):""}</td>
+                    <td className="right">{(Number.isFinite(r?.lo)&&Number.isFinite(r?.hi))? `[${r.lo.toFixed(3)}, ${r.hi.toFixed(3)}]` : ""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -576,7 +590,7 @@ function TeacherDashboard() {
                 <YAxis dataKey="y" label={{ value: "Distance (m)", angle: -90, position: "insideLeft" }} />
                 <Tooltip />
                 <Legend />
-                <Scatter data={stripData} name="Trials" />
+                <Scatter data={stripData || []} name="Trials" />
               </ScatterChart>
             </ResponsiveContainer>
           </div>
@@ -589,15 +603,15 @@ function TeacherDashboard() {
           <div style={{height:300}}>
             <ResponsiveContainer>
               <LineChart data={(() => {
-                const classesSet = Array.from(new Set(submissions.map(s => s.classCode)));
+                const classesSet = Array.from(new Set((submissions||[]).map(s => s.classCode)));
                 // pivot by condition
                 return conditionLabels.map(label => {
                   const row = { condition: label };
                   classesSet.forEach(code => {
-                    const vals = submissions
+                    const vals = (submissions||[])
                       .filter(s => active==="ALL" ? s.classCode===code : s.classCode===active && code===active)
                       .flatMap(s => s.conditions||[])
-                      .filter(c => c.label===label && typeof c.avg === "number")
+                      .filter(c => c.label===label && Number.isFinite(c?.avg))
                       .map(c => c.avg);
                     row[code] = vals.length ? mean(vals) : 0;
                   });
@@ -609,7 +623,7 @@ function TeacherDashboard() {
                 <YAxis label={{ value: "Avg Distance (m)", angle: -90, position: "insideLeft" }} />
                 <Tooltip />
                 <Legend />
-                {Array.from(new Set(submissions.map(s => s.classCode))).map(code => (
+                {Array.from(new Set((submissions||[]).map(s => s.classCode))).map(code => (
                   <Line key={code} type="monotone" dataKey={code} name={code} dot={false} />
                 ))}
               </LineChart>
@@ -625,12 +639,12 @@ function TeacherDashboard() {
                 <tr><th>#</th><th>Class</th><th>Group</th><th className="right">SD (all trials)</th></tr>
               </thead>
               <tbody>
-                {precisionRows.map((r, i) => (
+                {(precisionRows||[]).map((r, i) => (
                   <tr key={r.classCode + r.groupName}>
                     <td>{i+1}</td>
                     <td>{r.classCode}</td>
                     <td>{r.groupName}</td>
-                    <td className="right">{r.sd.toFixed(3)}</td>
+                    <td className="right">{Number.isFinite(r?.sd)? r.sd.toFixed(3):""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -639,7 +653,7 @@ function TeacherDashboard() {
         </div>
       </div>
 
-      {cohensTable.length > 0 && (
+      {(cohensTable||[]).length > 0 && (
         <div className="card">
           <strong>Effect Size vs Control (Cohen's d)</strong>
           <div className="muted">~0.2 small • ~0.5 medium • ~0.8 large (sign shows direction vs control)</div>
@@ -649,10 +663,10 @@ function TeacherDashboard() {
                 <tr><th>Group</th><th className="right">d</th></tr>
               </thead>
               <tbody>
-                {cohensTable.map(row => (
+                {(cohensTable||[]).map(row => (
                   <tr key={row.label}>
                     <td>{row.label}</td>
-                    <td className="right">{row.d==null? "" : row.d.toFixed(3)}</td>
+                    <td className="right">{Number.isFinite(row?.d) ? row.d.toFixed(3) : ""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -663,7 +677,7 @@ function TeacherDashboard() {
 
       <div className="card">
         <div className="row" style={{justifyContent:"space-between", alignItems:"baseline"}}>
-          <strong>Submissions ({filtered.length})</strong>
+          <strong>Submissions {(filtered||[]).length ? `(${filtered.length})` : ""}</strong>
           <div className="muted">Highlight legend: <span style={{background:'#FEF3C7', padding:'2px 6px', borderRadius:6, border:'1px solid #FDE68A'}}>possible cm</span> (100–999)</div>
         </div>
         <div style={{overflowX:"auto"}}>
@@ -678,28 +692,29 @@ function TeacherDashboard() {
               </tr>
             </thead>
             <tbody>
-              {filtered.flatMap(s => (s.conditions||[]).map(c => (
-                <tr key={s.id + c.label}>
+              {(filtered||[]).flatMap(s => (s.conditions||[]).map((c, idx) => (
+                <tr key={`${s.id}-${idx}-${c.label}`}>
                   <td>{s.createdAt?.toDate?.().toLocaleString?.() ?? ""}</td>
                   <td>{s.classCode}</td>
                   <td>{s.groupName}</td>
                   <td>{(s.members||[]).join(", ")}</td>
                   <td>{s.hypothesis || ""}</td>
                   <td>{c.label}</td>
-                  <td className="right">{c.mass ?? ""}</td>
+                  <td className="right">{Number.isFinite(c?.mass) ? c.mass : (c?.mass ?? "")}</td>
                   {/* Trial cells with cm-highlighting */}
                   {[0,1,2].map(i => (
                     <td key={i} className="right" style={isCentimeterLike(c.trials?.[i]) ? { background:'#FEF3C7', border:'1px solid #FDE68A' } : {}}>
-                      {c.trials?.[i] ?? ""}
+                      {Number.isFinite(c?.trials?.[i]) ? c.trials[i] : (c?.trials?.[i] ?? "")}
                     </td>
                   ))}
-                  <td className="right">{typeof c.avg === "number" ? c.avg.toFixed(3) : ""}</td>
-                  <td className="right">{typeof c.sd === "number" ? c.sd.toFixed(3) : ""}</td>
+                  <td className="right">{Number.isFinite(c?.avg) ? c.avg.toFixed(3) : ""}</td>
+                  <td className="right">{Number.isFinite(c?.sd) ? c.sd.toFixed(3) : ""}</td>
                 </tr>
               )))}
             </tbody>
           </table>
         </div>
+        <div className="muted" style={{marginTop:6}}>Tip: Set up your six class codes (P2, P3, P4, P6, P7, P8) in the Teacher tab and share them with students.</div>
       </div>
     </div>
   );
