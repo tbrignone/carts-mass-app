@@ -11,6 +11,8 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  getDocs,
+  updateDoc,
 } from "firebase/firestore";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import {
@@ -19,12 +21,14 @@ import {
 } from "recharts";
 
 /**
- * Carts & Mass Experiment — React Single File (Enhanced)
+ * Carts & Mass Experiment — React Single File (Enhanced + cm→m fixer)
  * Adds:
  * - Hypothesis dropdown on Student form
  * - Experiment Group label (read-only)
  * - Teacher: richer stats (slope/R²), hypothesis tally & % correct, precision leaderboard,
  *   trial strip plot, Cohen's d vs control, CI table per condition
+ * - Maintenance tools: Scan & Convert centimeter-like trial values (100–999) → meters
+ *   with visual highlighting of suspected cm trials in the submissions table
  */
 
 // ---- Firebase client config (yours) ----
@@ -399,16 +403,54 @@ function TeacherDashboard() {
       });
   }, [filtered, conditionLabels]);
 
-  async function seedDefaultClasses() {
-    const preset = [
-      { code:"P2", name:"Period 2" },
-      { code:"P3", name:"Period 3" },
-      { code:"P4", name:"Period 4" },
-      { code:"P6", name:"Period 6" },
-      { code:"P7", name:"Period 7" },
-      { code:"P8", name:"Period 8" },
-    ];
-    await Promise.all(preset.map(c => setDoc(doc(db, "classes", c.code), c)));
+  // ---------- cm→m tools ----------
+  const isCentimeterLike = (x) => typeof x === "number" && x >= 100 && x <= 999; // 3-digit values
+
+  function recomputeStats(trials) {
+    const nums = (trials || []).filter((x) => typeof x === "number" && isFinite(x));
+    if (!nums.length) return { avg: null, sd: null };
+    const m = nums.reduce((a,b)=>a+b,0) / nums.length;
+    const v = nums.reduce((a,x)=> a + (x - m) ** 2, 0) / nums.length;
+    return { avg: m, sd: Math.sqrt(v) };
+  }
+
+  async function scanCmCandidates() {
+    const snap = await getDocs(collection(db, "submissions"));
+    let trialFixes = 0, docsAffected = 0;
+    snap.forEach((d) => {
+      const data = d.data() || {};
+      const conds = data.conditions || [];
+      let changed = 0;
+      conds.forEach((c) => {
+        (c.trials || []).forEach((t) => { if (isCentimeterLike(t)) changed++; });
+      });
+      if (changed > 0) { docsAffected++; trialFixes += changed; }
+    });
+    alert(`Scan complete:\n• Docs with cm-like values: ${docsAffected}\n• Trials to convert: ${trialFixes}`);
+  }
+
+  async function convertCmToMeters() {
+    const snap = await getDocs(collection(db, "submissions"));
+    let trialFixes = 0, docsUpdated = 0;
+    for (const d of snap.docs) {
+      const data = d.data() || {};
+      const conds = (data.conditions || []).map((c) => {
+        const newTrials = (c.trials || []).map((t) => isCentimeterLike(t) ? t/100 : t);
+        const { avg, sd } = recomputeStats(newTrials);
+        return { ...c, trials: newTrials, avg, sd };
+      });
+
+      const oldTrials = (data.conditions || []).flatMap((c) => c.trials || []);
+      const newTrials = conds.flatMap((c) => c.trials || []);
+      const changedHere = newTrials.reduce((acc, t, i) => acc + (t !== oldTrials[i] ? 1 : 0), 0);
+
+      if (changedHere > 0) {
+        await updateDoc(doc(db, "submissions", d.id), { conditions: conds });
+        docsUpdated++;
+        trialFixes += changedHere;
+      }
+    }
+    alert(`Conversion complete:\n• Docs updated: ${docsUpdated}\n• Trials converted: ${trialFixes}`);
   }
 
   if (!authed) {
@@ -430,13 +472,18 @@ function TeacherDashboard() {
   return (
     <div className="grid" style={{gap:16}}>
       <div className="card">
-        <div className="row" style={{justifyContent:"space-between"}}>
-          <h3 style={{marginTop:0}}>Classes</h3>
-          <div className="row" style={{gap:8}}>
+        <div className="row" style={{justifyContent:"space-between", flexWrap:"wrap", gap:8}}>
+          <div className="row" style={{gap:8, flexWrap:"wrap"}}>
+            <h3 style={{marginTop:0}}>Classes</h3>
             <button className="secondary" onClick={seedDefaultClasses}>Seed P2, P3, P4, P6, P7, P8</button>
           </div>
+          {/* Maintenance tools */}
+          <div className="row" style={{gap:8}}>
+            <button className="secondary" onClick={scanCmCandidates}>Scan for cm entries</button>
+            <button onClick={convertCmToMeters}>Convert cm → m</button>
+          </div>
         </div>
-        <div className="grid grid-3">
+        <div className="grid grid-3" style={{marginTop:8}}>
           <div>
             <label>Class Name</label>
             <input value={className} onChange={e=>setClassName(e.target.value)} placeholder="Period 2" />
@@ -529,7 +576,7 @@ function TeacherDashboard() {
                 <YAxis dataKey="y" label={{ value: "Distance (m)", angle: -90, position: "insideLeft" }} />
                 <Tooltip />
                 <Legend />
-                <Scatter data={stripData} name="Trials" fill="#8884d8" />
+                <Scatter data={stripData} name="Trials" />
               </ScatterChart>
             </ResponsiveContainer>
           </div>
@@ -615,7 +662,10 @@ function TeacherDashboard() {
       )}
 
       <div className="card">
-        <strong>Submissions ({filtered.length})</strong>
+        <div className="row" style={{justifyContent:"space-between", alignItems:"baseline"}}>
+          <strong>Submissions ({filtered.length})</strong>
+          <div className="muted">Highlight legend: <span style={{background:'#FEF3C7', padding:'2px 6px', borderRadius:6, border:'1px solid #FDE68A'}}>possible cm</span> (100–999)</div>
+        </div>
         <div style={{overflowX:"auto"}}>
           <table>
             <thead>
@@ -637,9 +687,12 @@ function TeacherDashboard() {
                   <td>{s.hypothesis || ""}</td>
                   <td>{c.label}</td>
                   <td className="right">{c.mass ?? ""}</td>
-                  <td className="right">{c.trials?.[0] ?? ""}</td>
-                  <td className="right">{c.trials?.[1] ?? ""}</td>
-                  <td className="right">{c.trials?.[2] ?? ""}</td>
+                  {/* Trial cells with cm-highlighting */}
+                  {[0,1,2].map(i => (
+                    <td key={i} className="right" style={isCentimeterLike(c.trials?.[i]) ? { background:'#FEF3C7', border:'1px solid #FDE68A' } : {}}>
+                      {c.trials?.[i] ?? ""}
+                    </td>
+                  ))}
                   <td className="right">{typeof c.avg === "number" ? c.avg.toFixed(3) : ""}</td>
                   <td className="right">{typeof c.sd === "number" ? c.sd.toFixed(3) : ""}</td>
                 </tr>
