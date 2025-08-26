@@ -15,14 +15,16 @@ import {
 import { getAuth, signInAnonymously } from "firebase/auth";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line
+  LineChart, Line, ScatterChart, Scatter
 } from "recharts";
 
 /**
- * Carts & Mass Experiment — React Single File
- * - Student tab: guided data entry + live chart/table
- * - Teacher tab: seed classes, aggregate charts, submissions table, CSV export (via browser)
- * - Firestore-powered Class dropdown on Student tab (reads from `classes` collection)
+ * Carts & Mass Experiment — React Single File (Enhanced)
+ * Adds:
+ * - Hypothesis dropdown on Student form
+ * - Experiment Group label (read-only)
+ * - Teacher: richer stats (slope/R²), hypothesis tally & % correct, precision leaderboard,
+ *   trial strip plot, Cohen's d vs control, CI table per condition
  */
 
 // ---- Firebase client config (yours) ----
@@ -60,12 +62,44 @@ function mean(arr) {
   if (!valid.length) return null;
   return valid.reduce((a,b)=>a+b,0)/valid.length;
 }
-function stdev(arr) {
+function sd(arr) {
   const valid = arr.filter((n) => Number.isFinite(n));
   if (valid.length < 2) return null;
   const m = mean(valid);
   const v = mean(valid.map(x => (x-m)**2));
   return Math.sqrt(v);
+}
+function se(arr){
+  const s = sd(arr); if (s==null) return null; return s / Math.sqrt(arr.filter(Number.isFinite).length);
+}
+function ci95(arr){
+  const m = mean(arr), s = se(arr);
+  if (m==null || s==null) return { lo: null, hi: null };
+  const d = 1.96*s; return { lo: m - d, hi: m + d };
+}
+function linreg(points){
+  const n = points.length; if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
+  const sx = points.reduce((a,p)=>a+p.x,0);
+  const sy = points.reduce((a,p)=>a+p.y,0);
+  const sxx = points.reduce((a,p)=>a+p.x*p.x,0);
+  const sxy = points.reduce((a,p)=>a+p.x*p.y,0);
+  const slope = (n*sxy - sx*sy) / (n*sxx - sx*sx);
+  const intercept = (sy - slope*sx)/n;
+  const ybar = sy/n;
+  const ssTot = points.reduce((a,p)=>a+(p.y-ybar)**2,0);
+  const ssRes = points.reduce((a,p)=>a+(p.y-(slope*p.x+intercept))**2,0);
+  const r2 = ssTot===0 ? 0 : 1 - ssRes/ssTot;
+  return { slope, intercept, r2 };
+}
+function cohensD(valsC, valsT){
+  const mC = mean(valsC), mT = mean(valsT);
+  const sC = sd(valsC), sT = sd(valsT);
+  const nC = valsC.filter(Number.isFinite).length;
+  const nT = valsT.filter(Number.isFinite).length;
+  if ([mC,mT,sC,sT].some(v => v==null) || nC<2 || nT<2) return null;
+  const sP = Math.sqrt(((nC-1)*sC**2 + (nT-1)*sT**2) / (nC+nT-2));
+  if (!Number.isFinite(sP) || sP===0) return null;
+  return (mT - mC) / sP;
 }
 
 // -------------------- Student Form --------------------
@@ -95,7 +129,7 @@ function StudentForm() {
   const parsed = useMemo(() => conditions.map(c => {
     const mass = toNumber(c.mass);
     const trials = [toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)];
-    return { ...c, mass, trials, avg: mean(trials), sd: stdev(trials) };
+    return { ...c, mass, trials, avg: mean(trials), sd: sd(trials) };
   }), [conditions]);
 
   const valid = useMemo(() => {
@@ -202,24 +236,26 @@ function StudentForm() {
           <input value={members} onChange={e=>setMembers(e.target.value)} placeholder="Alex, Bo, Chris" />
         </div>
       </div>
-      <div style={{ gridColumn: "1 / -1" }}>
-  				<label>
-    				Hypothesis: If the mass of the cart increases, then the distance the cart rolls will...
-  				</label>
-  				<select value={hypothesis} onChange={(e) => setHypothesis(e.target.value)}>
-   				 <option value="increase">increase</option>
-   				 <option value="decrease">decrease</option>
-  				</select>
-			</div>
+
+      {/* Hypothesis Row */}
+      <div style={{ gridColumn: "1 / -1", marginTop: 8 }}>
+        <label>
+          Hypothesis: If the mass of the cart increases, then the distance the cart rolls will...
+        </label>
+        <select value={hypothesis} onChange={(e) => setHypothesis(e.target.value)}>
+          <option value="increase">increase</option>
+          <option value="decrease">decrease</option>
+        </select>
+      </div>
 
       <div className="grid" style={{marginTop:12}}>
         {conditions.map((c, idx) => (
           <div className="card" key={c.key}>
             <div className="grid grid-3">
               <div style={{gridColumn:"span 2"}}>
-  				<label>Experiment Group</label>
-  				<input value={c.label} disabled />
-			  </div>
+                <label>Experiment Group</label>
+                <input value={c.label} disabled />
+              </div>
               <div>
                 <label>Cart Mass (g)</label>
                 <input value={c.mass} onChange={e=>{
@@ -237,13 +273,12 @@ function StudentForm() {
                 </div>
               ))}
             </div>
-            
             <div className="muted" style={{marginTop:6}}>
               Live Avg: {(() => {
                 const a = mean([toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)]);
                 return a ? a.toFixed(3) + " m" : "–";
               })()} | SD: {(() => {
-                const s = stdev([toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)]);
+                const s = sd([toNumber(c.t1), toNumber(c.t2), toNumber(c.t3)]);
                 return s ? s.toFixed(3) + " m" : "–";
               })()}
             </div>
@@ -255,8 +290,10 @@ function StudentForm() {
 
       <div className="row" style={{justifyContent:"space-between", marginTop:8}}>
         <div className="muted">All values must be numbers. Use a period for decimals.</div>
-        <button disabled={!valid || !classCode || busy} onClick={handleSubmit}>{busy? "Submitting…" : "Submit Data"}</button>
+        <div style={{display:"flex", flexDirection:"column", gap:6, alignItems:"flex-end"}}>
+          <button disabled={!valid || !classCode || busy} onClick={handleSubmit}>{busy? "Submitting…" : "Submit Data"}</button>
           {!classCode && <div className="muted">Select your class to enable submit.</div>}
+        </div>
       </div>
     </div>
   );
@@ -292,29 +329,75 @@ function TeacherDashboard() {
     return Array.from(set);
   }, [submissions]);
 
-  const aggByCondition = useMemo(() => {
+  // --- Aggregations for richer stats ---
+  const byCond = useMemo(() => {
     return conditionLabels.map(label => {
-      const vals = filtered.flatMap(s => s.conditions||[]).filter(c=>c.label===label && typeof c.avg === "number").map(c=>c.avg);
-      return { condition: label, average: mean(vals) ?? 0, n: vals.length };
+      const vals = filtered.flatMap(s => s.conditions||[])
+        .filter(c=>c.label===label && typeof c.avg === "number")
+        .map(c=>c.avg);
+      const m = vals.length ? mean(vals) : 0;
+      const s = se(vals);
+      const { lo, hi } = vals.length ? ci95(vals) : { lo: m, hi: m };
+      return { condition: label, average: m, n: vals.length, se: s, lo, hi };
     });
   }, [filtered, conditionLabels]);
 
-  const classesSet = Array.from(new Set(submissions.map(s => s.classCode)));
-  const perClassAgg = useMemo(()=>{
-    const rows = conditionLabels.map(label => {
-      const row = { condition: label };
-      classesSet.forEach(code => {
-        const vals = submissions
-          .filter(s => active==="ALL" ? s.classCode===code : s.classCode===active && code===active)
-          .flatMap(s => s.conditions||[])
-          .filter(c => c.label===label && typeof c.avg === "number")
-          .map(c => c.avg);
-        row[code] = vals.length ? mean(vals) : 0;
+  // For regression: average mass and distance for each condition label
+  const massPoints = useMemo(() => {
+    return conditionLabels.map(label => {
+      const masses = filtered.flatMap(s=>s.conditions||[]).filter(c=>c.label===label).map(c=>c.mass).filter(Number.isFinite);
+      const avgs   = filtered.flatMap(s=>s.conditions||[]).filter(c=>c.label===label && Number.isFinite(c.avg)).map(c=>c.avg);
+      const mass = masses.length ? mean(masses) : null;
+      const avg  = avgs.length ? mean(avgs)   : null;
+      return (mass!=null && avg!=null) ? { x: mass, y: avg, label } : null;
+    }).filter(Boolean);
+  }, [filtered, conditionLabels]);
+
+  const { slope, r2 } = useMemo(() => massPoints.length>=2 ? linreg(massPoints) : { slope:0, r2:0 }, [massPoints]);
+
+  // Hypothesis tally and correctness vs observed slope
+  const hypCounts = useMemo(() => {
+    return filtered.reduce((a,s)=>{ const h = (s.hypothesis||"increase").toLowerCase(); a[h]=(a[h]||0)+1; return a; }, {});
+  }, [filtered]);
+  const correctPct = useMemo(() => {
+    const total = (hypCounts.increase||0)+(hypCounts.decrease||0);
+    if (!total) return null;
+    const observedIncrease = slope > 0;
+    const correct = observedIncrease ? (hypCounts.increase||0) : (hypCounts.decrease||0);
+    return 100*correct/total;
+  }, [hypCounts, slope]);
+
+  // Precision leaderboard (lower SD across all trials per submission)
+  const precisionRows = useMemo(() => {
+    const rows = filtered.map(s => {
+      const trials = (s.conditions||[]).flatMap(c => (c.trials||[])).filter(Number.isFinite);
+      return { classCode: s.classCode, groupName: s.groupName, sd: sd(trials) };
+    }).filter(r => r.sd!=null);
+    rows.sort((a,b)=>a.sd-b.sd);
+    return rows.slice(0,10);
+  }, [filtered]);
+
+  // Strip plot data: every trial point per condition
+  const stripData = useMemo(() => {
+    return conditionLabels.flatMap(label =>
+      filtered.flatMap(s => s.conditions||[])
+        .filter(c=>c.label===label)
+        .flatMap(c => (c.trials||[]).filter(Number.isFinite).map(t => ({ condition: label, y: t })))
+    );
+  }, [filtered, conditionLabels]);
+
+  // Cohen's d vs control
+  const cohensTable = useMemo(() => {
+    const ctrlVals = filtered.flatMap(s=>s.conditions||[]).filter(c=>/control/i.test(c.label)).map(c=>c.avg).filter(Number.isFinite);
+    if (!ctrlVals.length) return [];
+    return conditionLabels
+      .filter(l => !/control/i.test(l))
+      .map(label => {
+        const vals = filtered.flatMap(s=>s.conditions||[]).filter(c=>c.label===label).map(c=>c.avg).filter(Number.isFinite);
+        const d = cohensD(ctrlVals, vals);
+        return { label, d };
       });
-      return row;
-    });
-    return rows;
-  }, [submissions, conditionLabels, active]);
+  }, [filtered, conditionLabels]);
 
   async function seedDefaultClasses() {
     const preset = [
@@ -383,12 +466,30 @@ function TeacherDashboard() {
         </div>
       </div>
 
+      {/* Stats header */}
+      <div className="card">
+        <div className="row" style={{justifyContent:"space-between", flexWrap:"wrap"}}>
+          <div>
+            <strong>Trend</strong>
+            <div className="muted">Δdistance/Δmass = {slope.toFixed(3)} | R² = {r2.toFixed(2)}</div>
+          </div>
+          <div>
+            <strong>Hypotheses</strong>
+            <div className="muted">increase: {hypCounts.increase||0} | decrease: {hypCounts.decrease||0} {correctPct!=null && `| % correct ≈ ${correctPct.toFixed(0)}%`}</div>
+          </div>
+          <div>
+            <strong>Active dataset</strong>
+            <div className="muted">Groups: {filtered.length} | Conditions: {conditionLabels.length}</div>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-2">
         <div className="card">
           <strong>Average Distance by Condition {active==="ALL" ? "(All Classes)" : `— ${active}`}</strong>
           <div style={{height:300}}>
             <ResponsiveContainer>
-              <BarChart data={aggByCondition}>
+              <BarChart data={byCond}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="condition" angle={-12} textAnchor="end" height={60} />
                 <YAxis label={{ value: "Avg Distance (m)", angle: -90, position: "insideLeft" }} />
@@ -398,13 +499,64 @@ function TeacherDashboard() {
               </BarChart>
             </ResponsiveContainer>
           </div>
-          <div className="muted">n values are reflected in the submissions table below.</div>
+          {/* CI table under the chart */}
+          <div style={{overflowX:"auto", marginTop:8}}>
+            <table>
+              <thead>
+                <tr><th>Condition</th><th className="right">n</th><th className="right">Mean</th><th className="right">SE</th><th className="right">95% CI</th></tr>
+              </thead>
+              <tbody>
+                {byCond.map(r => (
+                  <tr key={r.condition}>
+                    <td>{r.condition}</td>
+                    <td className="right">{r.n}</td>
+                    <td className="right">{Number.isFinite(r.average)? r.average.toFixed(3):""}</td>
+                    <td className="right">{Number.isFinite(r.se)? r.se.toFixed(3):""}</td>
+                    <td className="right">{(r.lo!=null&&r.hi!=null)? `[${r.lo.toFixed(3)}, ${r.hi.toFixed(3)}]` : ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
+        <div className="card">
+          <strong>Trial Strip Plot (All Trials by Condition)</strong>
+          <div style={{height:300}}>
+            <ResponsiveContainer>
+              <ScatterChart>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="condition" type="category" angle={-12} textAnchor="end" height={60} />
+                <YAxis dataKey="y" label={{ value: "Distance (m)", angle: -90, position: "insideLeft" }} />
+                <Tooltip />
+                <Legend />
+                <Scatter data={stripData} name="Trials" fill="#8884d8" />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-2">
         <div className="card">
           <strong>Compare Classes (Avg by Condition)</strong>
           <div style={{height:300}}>
             <ResponsiveContainer>
-              <LineChart data={perClassAgg}>
+              <LineChart data={(() => {
+                const classesSet = Array.from(new Set(submissions.map(s => s.classCode)));
+                // pivot by condition
+                return conditionLabels.map(label => {
+                  const row = { condition: label };
+                  classesSet.forEach(code => {
+                    const vals = submissions
+                      .filter(s => active==="ALL" ? s.classCode===code : s.classCode===active && code===active)
+                      .flatMap(s => s.conditions||[])
+                      .filter(c => c.label===label && typeof c.avg === "number")
+                      .map(c => c.avg);
+                    row[code] = vals.length ? mean(vals) : 0;
+                  });
+                  return row;
+                });
+              })()}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="condition" angle={-12} textAnchor="end" height={60} />
                 <YAxis label={{ value: "Avg Distance (m)", angle: -90, position: "insideLeft" }} />
@@ -417,7 +569,50 @@ function TeacherDashboard() {
             </ResponsiveContainer>
           </div>
         </div>
+
+        <div className="card">
+          <strong>Precision Leaderboard (lowest SD wins)</strong>
+          <div style={{overflowX:"auto"}}>
+            <table>
+              <thead>
+                <tr><th>#</th><th>Class</th><th>Group</th><th className="right">SD (all trials)</th></tr>
+              </thead>
+              <tbody>
+                {precisionRows.map((r, i) => (
+                  <tr key={r.classCode + r.groupName}>
+                    <td>{i+1}</td>
+                    <td>{r.classCode}</td>
+                    <td>{r.groupName}</td>
+                    <td className="right">{r.sd.toFixed(3)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
+
+      {cohensTable.length > 0 && (
+        <div className="card">
+          <strong>Effect Size vs Control (Cohen's d)</strong>
+          <div className="muted">~0.2 small • ~0.5 medium • ~0.8 large (sign shows direction vs control)</div>
+          <div style={{overflowX:"auto", marginTop:8}}>
+            <table>
+              <thead>
+                <tr><th>Group</th><th className="right">d</th></tr>
+              </thead>
+              <tbody>
+                {cohensTable.map(row => (
+                  <tr key={row.label}>
+                    <td>{row.label}</td>
+                    <td className="right">{row.d==null? "" : row.d.toFixed(3)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <strong>Submissions ({filtered.length})</strong>
@@ -446,7 +641,7 @@ function TeacherDashboard() {
                   <td className="right">{c.trials?.[1] ?? ""}</td>
                   <td className="right">{c.trials?.[2] ?? ""}</td>
                   <td className="right">{typeof c.avg === "number" ? c.avg.toFixed(3) : ""}</td>
-                  <td className="right">{typeof c.sd === "number" ? c.sd.sd?.toFixed?.(3) : (typeof c.sd === "number" ? c.sd.toFixed(3) : "")}</td>
+                  <td className="right">{typeof c.sd === "number" ? c.sd.toFixed(3) : ""}</td>
                 </tr>
               )))}
             </tbody>
